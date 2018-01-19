@@ -46,7 +46,8 @@ def main():
     col.create_index({"user_id": 1}, {"unique": True})
     # search
     res = col.find({'some_field.1': {'$exists': True}})  # some_field: [1, 2] or [1, 2, 3]
-    res = col.find({'some_field.0': {'$exists': True}})  # has some_field
+    res = col.find({'some_field.0': {'$exists': True}})  # some_field: [1] or [1, 2]
+    res = col.find({'some_field': {'$exists': True}})  # has some_field
     res = col.find({'$and': [{'some_field.1': {'$exists': True}}, {'other_field': 0}]})
 
     res = col.find({'some_field': {'$regex': "value1|value2|value3"}})  # some_field: value1 or value2 or value3; return all match records
