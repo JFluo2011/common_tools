@@ -231,6 +231,13 @@ def synchronize():
     obj.start()
 
 
+def pool():
+    """
+    参见concurrent.futures.ThreadPoolExecutor
+    """
+    pass
+
+
 def main():
     synchronize()
 

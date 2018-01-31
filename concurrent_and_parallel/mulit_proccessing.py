@@ -1,7 +1,7 @@
 import time
 import random
 import pprint
-from multiprocessing import Pipe, Value, Array, JoinableQueue, Queue, current_process, Process, Manager
+from multiprocessing import Pipe, Value, Array, JoinableQueue, Queue, current_process, Process, Manager, Pool
 from multiprocessing.sharedctypes import typecode_to_type
 from multiprocessing.managers import ListProxy, SyncManager
 
@@ -228,6 +228,28 @@ def ipc():
     obj.start()
 
 
+class MultiProcessingPool(object):
+    def __init__(self):
+        self.args = range(25, 38)
+
+    def fib(self, n):
+        if n <= 2:
+            return 1
+        return self.fib(n - 1) + self.fib(n - 2)
+
+    def start(self):
+        start = time.time()
+        pool_ = Pool(4)
+        for num, result in zip(self.args, pool_.map(self.fib, self.args)):
+            print('fib({}) = {}'.format(num, result))
+        print('COST: {}'.format(time.time() - start))
+
+
+def pool():
+    obj = MultiProcessingPool()
+    obj.start()
+
+
 def synchronize():
     """
     同步机制(与线程相似)：
@@ -241,11 +263,12 @@ def synchronize():
 
 
 def main():
-    # Pool（用于创建管理进程池）
+    # Pool进程池
+    pool()
     # 同步机制(与线程相似)
     pass
     # 进程间通信（Interprocess communication）
-    ipc()
+    # ipc()
 
 
 if __name__ == '__main__':
