@@ -8,7 +8,7 @@ import aiohttp
 
 class Download(object):
     def __init__(self):
-        self.numbers = range(16)
+        self.numbers = range(40)
         self.base_url = 'http://httpbin.org/get?a={}'
 
     def fetch(self, a):
@@ -90,10 +90,15 @@ class Download(object):
         print('Use asyncio+aiohttp+ThreadPoolExecutor cost: {}'.format(time.time() - start))
 
     def start(self):
+        time.sleep(1)
         self.download_with_requests_threadpoolexecutor()
+        time.sleep(1)
         self.download_with_requests_processpoolexecutor()
+        time.sleep(1)
         self.download_with_requests_asyncio_threadpoolexecutor()
+        time.sleep(1)
         self.download_with_aiohttp_asyncio()
+        time.sleep(1)
         self.download_with_aiohttp_asyncio_threadpoolexecutor()
 
 
