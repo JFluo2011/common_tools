@@ -90,15 +90,15 @@ class Download(object):
         print('Use asyncio+aiohttp+ThreadPoolExecutor cost: {}'.format(time.time() - start))
 
     def start(self):
-        time.sleep(1)
+        time.sleep(5)
         self.download_with_requests_threadpoolexecutor()
-        time.sleep(1)
+        time.sleep(5)
         self.download_with_requests_processpoolexecutor()
-        time.sleep(1)
+        time.sleep(5)
         self.download_with_requests_asyncio_threadpoolexecutor()
-        time.sleep(1)
+        time.sleep(5)
         self.download_with_aiohttp_asyncio()
-        time.sleep(1)
+        time.sleep(5)
         self.download_with_aiohttp_asyncio_threadpoolexecutor()
 
 
