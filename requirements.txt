@@ -1,0 +1,7 @@
+pymongo
+rsa
+requests
+aiohttp
+redis
+lxml
+async_timeout

@@ -15,6 +15,7 @@ build
 full
 Video
 logs
+images
 *-bak
 
 
@@ -23,6 +24,6 @@ logs
 
 
 # project
-test_config.py
+local_config.py
 result.log
 *-bak.py
