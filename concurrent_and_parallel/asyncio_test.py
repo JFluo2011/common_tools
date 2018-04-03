@@ -4,6 +4,7 @@ import sys
 import json
 import random
 import asyncio
+from asyncio import Queue
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -12,7 +13,7 @@ import async_timeout
 import redis
 from lxml import etree
 
-logging.getLogger('asyncio').setLevel(logging.DEBUG)
+# logging.getLogger('asyncio').setLevel(logging.DEBUG)
 
 FORMAT = '%(asctime)s %(filename)s[line:%(lineno)d] %(levelname)s %(message)s'
 DATEFMT = '%a, %d %b %Y %H:%M:%S'
@@ -39,10 +40,49 @@ class Crawler(object):
         self.headers = {
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/65.0.3325.181 Safari/537.36',
         }
-        self.redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
+        self.redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
         self.start_page_key = 'start_page'
         self.detail_page_key = 'detail_page'
         self.download_page_key = 'download_page'
+        # self.download_semaphore = asyncio.Semaphore(40)
+        self.semaphore = asyncio.Semaphore(10)
+        self.handle_failed_semaphore = asyncio.Semaphore(10)
+        self.q = Queue(loop=self.loop)
+
+    async def start_task(self):
+        while True:
+            await self.create_task(self.start_page_key, self.parse_detail_task)
+
+    async def detail_task(self):
+        while True:
+            await self.create_task(self.detail_page_key, self.parse_download_task)
+
+    async def download_task(self):
+        while True:
+            # async with self.download_semaphore:
+            task, json_data = await self.get_task(self.download_page_key)
+            if task is None:
+                await asyncio.sleep(10)
+                continue
+            response = await self.fetch(json_data['url'], self.download_page_key, task)
+            if (response is not None) and (response.status == 200):
+                try:
+                    async with async_timeout.timeout(10):
+                        content = await response.read()
+                except Exception as err:
+                    logging.error(str(err))
+                    self.loop.run_in_executor(None, self.insert_task, self.download_page_key, task)
+                    # self.q.put_nowait((self.download_page_key, task))
+                else:
+                    self.loop.run_in_executor(None,  self.save_image, json_data['path'], content)
+
+    async def handle_failed_task(self):
+        while True:
+            async with self.handle_failed_semaphore:
+                redis_key, task = await self.q.get()
+                self.loop.run_in_executor(None, self.insert_task, redis_key, task)
+                logging.info('handle failed task: {}'.format(task))
+                self.q.task_done()
 
     def get_proxy(self):
         try:
@@ -54,87 +94,66 @@ class Crawler(object):
     async def close(self):
         await self.session.close()
 
-    async def parse_page(self):
-        while True:
-            await asyncio.sleep(3)
-            url = self.redis_client.spop(self.start_page_key)
-            if url is None:
-                # logging.info('no more start page to parse')
-                await asyncio.sleep(10)
-                continue
-            response = await self.fetch(url, self.start_page_key, url)
-            if response is not None:
-                if response.status == 200:
-                    try:
-                        async with async_timeout.timeout(10):
-                            text = await response.text()
-                    except Exception as err:
-                        logging.error(str(err))
-                        self.loop.run_in_executor(None, self.insert_task, self.start_page_key, url)
-                    else:
-                        selector = etree.HTML(text)
-                        for sel in selector.xpath('//*[@class="gallery_image"]'):
-                            xpath_ = './/img[@class="img-responsive img-rounded"]/@src'
-                            category = re.findall('ua/(.*?)/page', url)[0]
-                            image_dir, image_number = re.findall('/mini/(\d+)/(\d+)\.jpg', sel.xpath(xpath_)[0])[0]
-                            json_data = {
-                                'url': sel.xpath('./@href')[0],
-                                'image_number': image_number,
-                                'image_dir': image_dir,
-                                'category': category,
-                            }
-                            self.loop.run_in_executor(None, self.insert_task,
-                                                      self.detail_page_key, json.dumps(json_data))
-                        # logging.info('{} {}'.format('parse_page', url))
-                else:
-                    logging.warning('{}: {}'.format(url, response.status))
+    async def get_task(self, redis_key):
+        task = self.redis_client.spop(redis_key)
+        return task, (task is not None) and json.loads(task)
 
-    async def parse_detail_page(self):
+    async def parse_task(self, redis_key, task, json_data, response, operate_func):
+        try:
+            async with async_timeout.timeout(10):
+                text = await response.text()
+        except Exception as err:
+            logging.error(str(err))
+            self.loop.run_in_executor(None, self.insert_task, redis_key, task)
+            # self.q.put_nowait((redis_key, task))
+        else:
+            await operate_func(text, json_data)
+
+    async def parse_detail_task(self, text, json_data):
+        selector = etree.HTML(text)
+        for sel in selector.xpath('//*[@class="gallery_image"]'):
+            xpath_ = './/img[@class="img-responsive img-rounded"]/@src'
+            category = re.findall('ua/(.*?)/page', json_data['url'])[0]
+            image_dir, image_number = re.findall('/mini/(\d+)/(\d+)\.jpg', sel.xpath(xpath_)[0])[0]
+            meta = {
+                'url': sel.xpath('./@href')[0],
+                'image_number': image_number,
+                'image_dir': image_dir,
+                'category': category,
+            }
+            self.loop.run_in_executor(None, self.insert_task, self.detail_page_key, json.dumps(meta))
+
+    async def parse_download_task(self, text, json_data):
         base_url = 'https://look.com.ua/pic'
-        while True:
-            await asyncio.sleep(3)
-            value = self.redis_client.spop(self.detail_page_key)
-            if value is None:
-                # logging.info('no more detail page to parse')
-                await asyncio.sleep(10)
+        selector = etree.HTML(text)
+        for url in selector.xpath('//*[@class="llink list-inline"]/li/a/@href'):
+            resolution = re.findall(r'download/\d+/(\d+x\d+)/', url)[0]
+            path = os.path.join(os.path.abspath('.'), 'images', json_data['category'],
+                                json_data['image_number'], resolution + '.jpg')
+            url = '/'.join([base_url, json_data['image_dir'], resolution,
+                            'look.com.ua-' + json_data['image_number'] + '.jpg'])
+            if os.path.exists(path):
+                logging.info('image {} already downloaded'.format(path))
                 continue
-            json_data = json.loads(value)
-            url = json_data['url']
-            category = json_data['category']
-            image_number = json_data['image_number']
-            image_dir = json_data['image_dir']
-            response = await self.fetch(url, self.detail_page_key, value)
-            if response is not None:
-                if response.status == 200:
-                    try:
-                        async with async_timeout.timeout(10):
-                            text = await response.text()
-                    except Exception as err:
-                        logging.error(str(err))
-                        self.loop.run_in_executor(None, self.insert_task, self.detail_page_key, value)
-                    else:
-                        selector = etree.HTML(text)
-                        for url in selector.xpath('//*[@class="llink list-inline"]/li/a/@href'):
-                            resolution = re.findall(r'download/\d+/(\d+x\d+)/', url)[0]
-                            path = os.path.join(os.path.abspath('.'), 'images', category, image_number, resolution + '.jpg')
-                            url = '/'.join([base_url, image_dir, resolution, 'look.com.ua-' + image_number + '.jpg'])
-                            if os.path.exists(path):
-                                logging.info('image {} already downloaded'.format(path))
-                                continue
-                            json_data = {
-                                'url': url,
-                                'path': path,
-                            }
-                            self.loop.run_in_executor(None, self.insert_task, self.download_page_key,
-                                                      json.dumps(json_data))
-                        # logging.info('{} {}'.format('parse_detail_page', url))
-                else:
-                    logging.warning('{}: {}'.format(url, response.status))
+            meta = {'url': url, 'path': path, }
+            self.loop.run_in_executor(None, self.insert_task, self.download_page_key, json.dumps(meta))
 
-    def insert_task(self, redis_key, value):
-        self.redis_client.sadd(redis_key, value)
+    async def create_task(self, redis_key, operate_func):
+        async with self.semaphore:
+            task, json_data = await self.get_task(redis_key)
+            if task is None:
+                await asyncio.sleep(10)
+            else:
+                url = json_data['url']
+                response = await self.fetch(url, redis_key, task)
+                if (response is not None) and (response.status == 200):
+                    await self.parse_task(redis_key, task, json_data, response, operate_func)
+
+    def insert_task(self, redis_key, task):
+        self.redis_client.sadd(redis_key, task)
 
     async def fetch(self, url, key, value):
+        logging.info('active tasks count: {}'.format(len(asyncio.Task.all_tasks())))
         try:
             response = await self.session.get(url, headers=self.headers, ssl=False, timeout=30,
                                               allow_redirects=False, proxy=self.get_proxy())
@@ -152,38 +171,16 @@ class Crawler(object):
             f.write(content)
         logging.info('{}: downloaded'.format(path))
 
-    async def download_image(self):
-        while True:
-            await asyncio.sleep(1)
-            value = self.redis_client.spop(self.download_page_key)
-            if value is None:
-                logging.info('no more download page to parse')
-                await asyncio.sleep(10)
-                continue
-            json_data = json.loads(value)
-            url = json_data['url']
-            path = json_data['path']
-            response = await self.fetch(url, self.download_page_key, value)
-            if response is not None:
-                if response.status == 200:
-                    try:
-                        async with async_timeout.timeout(10):
-                            content = await response.read()
-                    except Exception as err:
-                        logging.error(str(err))
-                        self.loop.run_in_executor(None, self.insert_task, self.download_page_key, value)
-                    else:
-                        self.loop.run_in_executor(None,  self.save_image, path, content)
-                else:
-                    logging.warning('{}: {}'.format(url, response.status))
-
     async def crawl(self):
         """Run the crawler until all finished."""
-        step = self.max_tasks // 3
+        # step = self.max_tasks // 3
         workers = []
-        workers.extend([asyncio.Task(self.parse_page(), loop=self.loop) for _ in range(self.max_tasks)[:step]])
-        workers.extend([asyncio.Task(self.parse_detail_page(), loop=self.loop) for _ in range(self.max_tasks)[step:step*2]])
-        workers.extend([asyncio.Task(self.download_image(), loop=self.loop) for _ in range(10)])
+        workers.extend([asyncio.Task(self.start_task(), loop=self.loop) for _ in range(2)])
+        workers.extend([asyncio.Task(self.detail_task(), loop=self.loop) for _ in range(5)])
+        workers.extend([asyncio.Task(self.download_task(), loop=self.loop) for _ in range(40)])
+        # asyncio.Task(self.start_task(), loop=self.loop)
+        # asyncio.Task(self.detail_task(), loop=self.loop)
+        # asyncio.Task(self.download_task(), loop=self.loop)
         while True:
             await asyncio.sleep(60)
         # for w in workers:
@@ -233,7 +230,10 @@ def main():
     crawler = Crawler(max_tries=5, max_tasks=30)
     for info in source_urls:
         for i in range(1, info[1]+1):
-            crawler.insert_task(crawler.start_page_key, info[0].format(i))
+            json_data = {
+                'url': info[0].format(i),
+            }
+            crawler.insert_task(crawler.start_page_key, json.dumps(json_data))
 
     try:
         loop.run_until_complete(crawler.crawl())  # Crawler gonna crawl.
