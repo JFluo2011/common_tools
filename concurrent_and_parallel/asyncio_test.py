@@ -45,7 +45,7 @@ class Crawler(object):
         self.detail_page_key = 'detail_page'
         self.download_page_key = 'download_page'
         # self.download_semaphore = asyncio.Semaphore(40)
-        self.semaphore = asyncio.Semaphore(10)
+        self.semaphore = asyncio.Semaphore(5)
         self.handle_failed_semaphore = asyncio.Semaphore(10)
         self.q = Queue(loop=self.loop)
 
@@ -128,7 +128,9 @@ class Crawler(object):
         selector = etree.HTML(text)
         for url in selector.xpath('//*[@class="llink list-inline"]/li/a/@href'):
             resolution = re.findall(r'download/\d+/(\d+x\d+)/', url)[0]
-            path = os.path.join(os.path.abspath('.'), 'images', json_data['category'],
+            # path = os.path.join(os.path.abspath('.'), 'images', json_data['category'],
+            #                     json_data['image_number'], resolution + '.jpg')
+            path = os.path.join(os.path.abspath('D:\\'), 'images', json_data['category'],
                                 json_data['image_number'], resolution + '.jpg')
             url = '/'.join([base_url, json_data['image_dir'], resolution,
                             'look.com.ua-' + json_data['image_number'] + '.jpg'])
@@ -175,9 +177,9 @@ class Crawler(object):
         """Run the crawler until all finished."""
         # step = self.max_tasks // 3
         workers = []
-        workers.extend([asyncio.Task(self.start_task(), loop=self.loop) for _ in range(2)])
-        workers.extend([asyncio.Task(self.detail_task(), loop=self.loop) for _ in range(5)])
-        workers.extend([asyncio.Task(self.download_task(), loop=self.loop) for _ in range(40)])
+        workers.extend([asyncio.Task(self.start_task(), loop=self.loop) for _ in range(1)])
+        workers.extend([asyncio.Task(self.detail_task(), loop=self.loop) for _ in range(2)])
+        workers.extend([asyncio.Task(self.download_task(), loop=self.loop) for _ in range(50)])
         # asyncio.Task(self.start_task(), loop=self.loop)
         # asyncio.Task(self.detail_task(), loop=self.loop)
         # asyncio.Task(self.download_task(), loop=self.loop)
@@ -194,6 +196,7 @@ def main():
         # ('https://www.look.com.ua/spring/page/{}/', 94),
         # ('https://www.look.com.ua/autumn/page/{}/', 99),
         # ('https://www.look.com.ua/hi-tech/page/{}/', 114),
+
         # ('https://www.look.com.ua/summer/page/{}/', 119),
         # ('https://www.look.com.ua/newyear/page/{}/', 156),
         # ('https://www.look.com.ua/men/page/{}/', 157),
@@ -223,6 +226,7 @@ def main():
         # ('https://www.look.com.ua/animals/page/{}/', 1103),
         # ('https://www.look.com.ua/landscape/page/{}/', 1140),
         # ('https://www.look.com.ua/nature/page/{}/', 1142),
+
         # ('https://www.look.com.ua/auto/page/{}/', 1559),
         # ('https://www.look.com.ua/girls/page/{}/', 9266),
     ]
