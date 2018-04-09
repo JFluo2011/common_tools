@@ -6,6 +6,7 @@ import random
 import asyncio
 from asyncio import Queue
 import logging
+import concurrent
 from logging.handlers import RotatingFileHandler
 
 import aiohttp
@@ -64,17 +65,9 @@ class Crawler(object):
             if task is None:
                 await asyncio.sleep(10)
                 continue
-            response = await self.fetch(json_data['url'], self.download_page_key, task)
-            if (response is not None) and (response.status == 200):
-                try:
-                    async with async_timeout.timeout(10):
-                        content = await response.read()
-                except Exception as err:
-                    logging.error(str(err))
-                    self.loop.run_in_executor(None, self.insert_task, self.download_page_key, task)
-                    # self.q.put_nowait((self.download_page_key, task))
-                else:
-                    self.loop.run_in_executor(None,  self.save_image, json_data['path'], content)
+            content = await self.fetch(json_data['url'], self.download_page_key, task, type_='content')
+            if content is not None:
+                self.loop.run_in_executor(None, self.save_image, json_data['path'], content)
 
     async def handle_failed_task(self):
         while True:
@@ -97,17 +90,6 @@ class Crawler(object):
     async def get_task(self, redis_key):
         task = self.redis_client.spop(redis_key)
         return task, (task is not None) and json.loads(task)
-
-    async def parse_task(self, redis_key, task, json_data, response, operate_func):
-        try:
-            async with async_timeout.timeout(10):
-                text = await response.text()
-        except Exception as err:
-            logging.error(str(err))
-            self.loop.run_in_executor(None, self.insert_task, redis_key, task)
-            # self.q.put_nowait((redis_key, task))
-        else:
-            await operate_func(text, json_data)
 
     async def parse_detail_task(self, text, json_data):
         selector = etree.HTML(text)
@@ -147,24 +129,27 @@ class Crawler(object):
                 await asyncio.sleep(10)
             else:
                 url = json_data['url']
-                response = await self.fetch(url, redis_key, task)
-                if (response is not None) and (response.status == 200):
-                    await self.parse_task(redis_key, task, json_data, response, operate_func)
+                html = await self.fetch(url, redis_key, task)
+                if html is not None:
+                    await operate_func(html, json_data)
 
     def insert_task(self, redis_key, task):
         self.redis_client.sadd(redis_key, task)
 
-    async def fetch(self, url, key, value):
+    async def fetch(self, url, key, value, type_='text'):
         logging.info('active tasks count: {}'.format(len(asyncio.Task.all_tasks())))
         try:
-            response = await self.session.get(url, headers=self.headers, ssl=False, timeout=30,
-                                              allow_redirects=False, proxy=self.get_proxy())
+            async with async_timeout.timeout(10):
+                async with self.session.get(url, headers=self.headers, ssl=False, timeout=30, allow_redirects=False,
+                                            proxy=self.get_proxy()) as response:
+                    return await response.read() if type_ == 'content' else await response.text()
         except Exception as err:
-            logging.warning('{} raised {}'.format(url, str(err)))
+            if isinstance(err, concurrent.futures._base.TimeoutError):
+                logging.warning('{} raised TimeoutError'.format(url))
+            else:
+                logging.warning('{} raised {}'.format(url, str(err)))
             self.loop.run_in_executor(None, self.insert_task, key, value)
             return None
-        else:
-            return response
 
     def save_image(self, path, content):
         if not os.path.exists('\\'.join(path.split('\\')[:-1])):
@@ -178,7 +163,7 @@ class Crawler(object):
         # step = self.max_tasks // 3
         workers = []
         workers.extend([asyncio.Task(self.start_task(), loop=self.loop) for _ in range(1)])
-        workers.extend([asyncio.Task(self.detail_task(), loop=self.loop) for _ in range(2)])
+        workers.extend([asyncio.Task(self.detail_task(), loop=self.loop) for _ in range(5)])
         workers.extend([asyncio.Task(self.download_task(), loop=self.loop) for _ in range(50)])
         # asyncio.Task(self.start_task(), loop=self.loop)
         # asyncio.Task(self.detail_task(), loop=self.loop)
@@ -193,7 +178,7 @@ def main():
     setup_log(logging.INFO, os.path.join(os.path.abspath('.'), 'logs', 'look_ua.log'))
     source_urls = [
         # ('https://www.look.com.ua/love/page/{}/', 42),
-        # ('https://www.look.com.ua/spring/page/{}/', 94),
+        ('https://www.look.com.ua/spring/page/{}/', 94),
         # ('https://www.look.com.ua/autumn/page/{}/', 99),
         # ('https://www.look.com.ua/hi-tech/page/{}/', 114),
 
