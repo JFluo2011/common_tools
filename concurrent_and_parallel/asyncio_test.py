@@ -5,6 +5,7 @@ import json
 import random
 import asyncio
 from asyncio import Queue
+from asyncio.windows_events import ProactorEventLoop
 import logging
 import concurrent
 from logging.handlers import RotatingFileHandler
@@ -41,12 +42,12 @@ class Crawler(object):
         self.headers = {
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/65.0.3325.181 Safari/537.36',
         }
-        self.redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+        self.redis_client = redis.Redis(host='localhost', port=6379, db=15, decode_responses=True)
         self.start_page_key = 'start_page'
         self.detail_page_key = 'detail_page'
         self.download_page_key = 'download_page'
         # self.download_semaphore = asyncio.Semaphore(40)
-        self.semaphore = asyncio.Semaphore(5)
+        self.semaphore = asyncio.Semaphore(30)
         self.handle_failed_semaphore = asyncio.Semaphore(10)
         self.q = Queue(loop=self.loop)
 
@@ -89,6 +90,7 @@ class Crawler(object):
 
     async def get_task(self, redis_key):
         task = self.redis_client.spop(redis_key)
+        self.redis_client.sadd('cache', task)
         return task, (task is not None) and json.loads(task)
 
     async def parse_detail_task(self, text, json_data):
@@ -112,7 +114,7 @@ class Crawler(object):
             resolution = re.findall(r'download/\d+/(\d+x\d+)/', url)[0]
             # path = os.path.join(os.path.abspath('.'), 'images', json_data['category'],
             #                     json_data['image_number'], resolution + '.jpg')
-            path = os.path.join(os.path.abspath('D:\\'), 'images', json_data['category'],
+            path = os.path.join(os.path.abspath('E:\\'), 'images', json_data['category'],
                                 json_data['image_number'], resolution + '.jpg')
             url = '/'.join([base_url, json_data['image_dir'], resolution,
                             'look.com.ua-' + json_data['image_number'] + '.jpg'])
@@ -162,9 +164,9 @@ class Crawler(object):
         """Run the crawler until all finished."""
         # step = self.max_tasks // 3
         workers = []
-        workers.extend([asyncio.Task(self.start_task(), loop=self.loop) for _ in range(1)])
-        workers.extend([asyncio.Task(self.detail_task(), loop=self.loop) for _ in range(5)])
-        workers.extend([asyncio.Task(self.download_task(), loop=self.loop) for _ in range(50)])
+        # workers.extend([asyncio.Task(self.start_task(), loop=self.loop) for _ in range(5)])
+        # workers.extend([asyncio.Task(self.detail_task(), loop=self.loop) for _ in range(20)])
+        workers.extend([asyncio.Task(self.download_task(), loop=self.loop) for _ in range(5)])
         # asyncio.Task(self.start_task(), loop=self.loop)
         # asyncio.Task(self.detail_task(), loop=self.loop)
         # asyncio.Task(self.download_task(), loop=self.loop)
@@ -178,7 +180,7 @@ def main():
     setup_log(logging.INFO, os.path.join(os.path.abspath('.'), 'logs', 'look_ua.log'))
     source_urls = [
         # ('https://www.look.com.ua/love/page/{}/', 42),
-        ('https://www.look.com.ua/spring/page/{}/', 94),
+        # ('https://www.look.com.ua/spring/page/{}/', 94),
         # ('https://www.look.com.ua/autumn/page/{}/', 99),
         # ('https://www.look.com.ua/hi-tech/page/{}/', 114),
 
@@ -207,15 +209,17 @@ def main():
         # ('https://www.look.com.ua/fantasy/page/{}/', 687),
         # ('https://www.look.com.ua/anime/page/{}/', 694),
         # ('https://www.look.com.ua/games/page/{}/', 720),
+
         # ('https://www.look.com.ua/other/page/{}/', 778),
         # ('https://www.look.com.ua/animals/page/{}/', 1103),
         # ('https://www.look.com.ua/landscape/page/{}/', 1140),
         # ('https://www.look.com.ua/nature/page/{}/', 1142),
-
         # ('https://www.look.com.ua/auto/page/{}/', 1559),
         # ('https://www.look.com.ua/girls/page/{}/', 9266),
     ]
-    loop = asyncio.get_event_loop()
+    # loop = asyncio.get_event_loop()
+    loop = ProactorEventLoop()
+    asyncio.set_event_loop(loop)
     crawler = Crawler(max_tries=5, max_tasks=30)
     for info in source_urls:
         for i in range(1, info[1]+1):
